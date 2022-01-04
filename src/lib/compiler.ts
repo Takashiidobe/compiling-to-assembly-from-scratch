@@ -21,10 +21,29 @@ export class Number implements AST {
   }
 }
 
+export class AddAssign implements AST {
+  constructor(public name: string, public value: AST) {}
+  emit(env: Environment) {
+    const offset = env.locals.get(this.name);
+    if (offset) {
+      emit(` add r0, [fp, #${offset}], #${(this.value as Number).value}`);
+    } else {
+      throw Error(`Undefined variable: ${this.name}`);
+    }
+  }
+  equals(other: AST): boolean {
+    return (
+      other instanceof AddAssign &&
+      this.name == other.name &&
+      this.value == other.value
+    );
+  }
+}
+
 export class Id implements AST {
   constructor(public value: string) {}
   emit(env: Environment) {
-    let offset = env.locals.get(this.value);
+    const offset = env.locals.get(this.value);
     if (offset) {
       emit(` ldr r0, [fp, #${offset}]`);
     } else {
@@ -593,6 +612,12 @@ const assignmentStatement: Parser<AST> = ID.bind((name) =>
   )
 );
 
+const addAssignmentStatement: Parser<AST> = ID.bind((name) =>
+  PLUS.and(ASSIGN)
+    .and(expression)
+    .bind((value) => SEMICOLON.and(constant(new AddAssign(name, value))))
+);
+
 const blockStatement: Parser<AST> = LEFT_BRACE.and(zeroOrMore(statement)).bind(
   (statements) => RIGHT_BRACE.and(constant(new Block(statements)))
 );
@@ -615,6 +640,7 @@ const statementParser: Parser<AST> = returnStatement
   .or(whileStatement)
   .or(varStatement)
   .or(assignmentStatement)
+  .or(addAssignmentStatement)
   .or(blockStatement)
   .or(expressionStatement);
 
