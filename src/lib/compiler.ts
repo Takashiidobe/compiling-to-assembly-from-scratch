@@ -281,12 +281,11 @@ export class Function implements AST {
   }
 
   setUpEnvironment() {
-    let locals = new Map();
+    const locals = new Map();
     this.parameters.forEach((parameter, i) => {
       locals.set(parameter, 4 * i - 16);
     });
-    nextLocalOffset = -20;
-    return new Environment(locals, nextLocalOffset);
+    return new Environment(locals, -20);
   }
 
   equals(other: AST): boolean {
@@ -304,7 +303,12 @@ export class Function implements AST {
 
 export class Var implements AST {
   constructor(public name: string, public value: AST) {}
-  emit(env: Environment) {}
+  emit(env: Environment) {
+    this.value.emit(env);
+    emit(` push {r0, ip}`);
+    env.locals.set(this.name, env.nextLocalOffset - 4);
+    env.nextLocalOffset -= 8;
+  }
   equals(other: AST): boolean {
     return (
       other instanceof Var &&
@@ -316,7 +320,15 @@ export class Var implements AST {
 
 export class Assign implements AST {
   constructor(public name: string, public value: AST) {}
-  emit(env: Environment) {}
+  emit(env: Environment) {
+    this.value.emit(env);
+    const offset = env.locals.get(this.name);
+    if (offset) {
+      emit(` str r0, [fp, #${offset}]`);
+    } else {
+      throw Error(`Undefined variable: ${this.name}`);
+    }
+  }
   equals(other: AST): boolean {
     return (
       other instanceof Assign &&
@@ -328,7 +340,17 @@ export class Assign implements AST {
 
 export class While implements AST {
   constructor(public conditional: AST, public body: AST) {}
-  emit(env: Environment) {}
+  emit(env: Environment) {
+    let loopStart = new Label();
+    let loopEnd = new Label();
+    emit(`${loopStart}:`);
+    this.conditional.emit(env);
+    emit(` cmp r0, #0`);
+    emit(` beq ${loopEnd}`);
+    this.body.emit(env);
+    emit(` b ${loopStart}`);
+    emit(`${loopEnd}:`);
+  }
   equals(other: AST): boolean {
     return (
       other instanceof While &&
@@ -582,11 +604,7 @@ const parameters: Parser<Array<string>> = ID.bind((param) =>
 const functionStatement: Parser<AST> = FUNCTION.and(ID).bind((name) =>
   LEFT_PAREN.and(parameters).bind((parameters) =>
     RIGHT_PAREN.and(blockStatement).bind((block) =>
-      constant(
-        name === 'main'
-          ? new Main(block instanceof Main ? block.statements : [])
-          : new Function(name, parameters, block)
-      )
+      constant(new Function(name, parameters, block))
     )
   )
 );
