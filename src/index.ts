@@ -8,6 +8,7 @@ const source = `
  function main() {
    var n = 20;
    n += 10;
+   n -= 10;
    return n;
  }
  `;

@@ -40,6 +40,25 @@ export class AddAssign implements AST {
   }
 }
 
+export class SubAssign implements AST {
+  constructor(public name: string, public value: AST) {}
+  emit(env: Environment) {
+    const offset = env.locals.get(this.name);
+    if (offset) {
+      emit(` sub r0, [fp, #${offset}], #${(this.value as Number).value}`);
+    } else {
+      throw Error(`Undefined variable: ${this.name}`);
+    }
+  }
+  equals(other: AST): boolean {
+    return (
+      other instanceof SubAssign &&
+      this.name == other.name &&
+      this.value == other.value
+    );
+  }
+}
+
 export class Id implements AST {
   constructor(public value: string) {}
   emit(env: Environment) {
@@ -618,6 +637,12 @@ const addAssignmentStatement: Parser<AST> = ID.bind((name) =>
     .bind((value) => SEMICOLON.and(constant(new AddAssign(name, value))))
 );
 
+const subAssignmentStatement: Parser<AST> = ID.bind((name) =>
+  MINUS.and(ASSIGN)
+    .and(expression)
+    .bind((value) => SEMICOLON.and(constant(new SubAssign(name, value))))
+);
+
 const blockStatement: Parser<AST> = LEFT_BRACE.and(zeroOrMore(statement)).bind(
   (statements) => RIGHT_BRACE.and(constant(new Block(statements)))
 );
@@ -641,6 +666,7 @@ const statementParser: Parser<AST> = returnStatement
   .or(varStatement)
   .or(assignmentStatement)
   .or(addAssignmentStatement)
+  .or(subAssignmentStatement)
   .or(blockStatement)
   .or(expressionStatement);
 
