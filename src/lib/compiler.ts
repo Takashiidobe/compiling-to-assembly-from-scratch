@@ -5,15 +5,155 @@
 const emit = console.log;
 
 export interface AST {
-  emit(env: Environment): void;
+  visit<T>(v: Visitor<T>): T;
   equals(other: AST): boolean;
+}
+
+export interface Visitor<T> {
+  visitAssert(node: Assert): T;
+  visitLength(node: Length): T;
+  visitArrayLookup(node: ArrayLookup): T;
+  visitNumber(node: Number): T;
+  visitBoolean(node: Boolean): T;
+  visitNot(node: Not): T;
+  visitEqual(node: Equal): T;
+  visitAddAssign(node: AddAssign): T;
+  visitSubAssign(node: SubAssign): T;
+  visitNotEqual(node: NotEqual): T;
+  visitId(node: Id): T;
+  visitArrayLiteral(node: ArrayLiteral): T;
+  visitUndefined(_: Undefined): T;
+  visitNull(_: Null): T;
+}
+
+export class CodeGenerator implements Visitor<void> {
+  constructor(
+    public locals: Map<string, number> = new Map(),
+    public nextLocalOffset: number = 0
+  ) {}
+
+  visitUndefined(_: Undefined) {
+    emit(` mov r0, #0`);
+  }
+
+  visitArrayLiteral(node: ArrayLiteral) {
+    const length = node.elements.length;
+    emit(` ldr r0, =${4 * (length + 1)}`);
+    emit(` bl malloc`);
+    emit(` push {r4, ip}`);
+    emit(` mov r4, r0`);
+    emit(` ldr r0, =${length}`);
+    emit(` str r0, [r4]`);
+    node.elements.forEach((element: AST, i: number) => {
+      element.visit(this);
+      emit(` str r0, [r4, #${4 * (i + 1)}]`);
+    });
+    emit(` mov r0, r4`);
+    emit(` pop {r4, ip}`);
+  }
+
+  visitNot(node: Not) {
+    node.term.visit(this);
+    emit(` cmp r0, #0`);
+    emit(` moveq r0, #1`);
+    emit(` movne r0, #0`);
+  }
+
+  visitBoolean(node: Boolean) {
+    if (node.value) {
+      emit(` mov r0, #1`);
+    } else {
+      emit(` mov r0, #0`);
+    }
+  }
+
+  visitAssert(node: Assert) {
+    node.condition.visit(this);
+    emit(` cmp r0, #1`);
+    emit(` moveq r0, #'.'`);
+    emit(` movne r0, #'F'`);
+    emit(` bl putchar`);
+  }
+
+  visitLength(node: Length) {
+    node.array.visit(this);
+    emit(` ldr r0, [r0, #0]`);
+  }
+
+  visitNumber(node: Number) {
+    emit(`  ldr r0, =${node.value}`);
+  }
+
+  visitAddAssign(node: AddAssign) {
+    const offset = this.locals.get(node.name);
+    if (offset) {
+      emit(` add r0, [fp, #${offset}], #${node.value}`);
+    } else {
+      throw Error(`Undefined variable: ${node.name}`);
+    }
+  }
+
+  visitSubAsssign(node: SubAssign) {
+    const offset = this.locals.get(node.name);
+    if (offset) {
+      emit(` sub r0, [fp, #${offset}], #${node.value}`);
+    } else {
+      throw Error(`Undefined variable: ${node.name}`);
+    }
+  }
+
+  visitId(node: Id) {
+    const offset = this.locals.get(node.value);
+    if (offset) {
+      emit(` ldr r0, [fp, #${offset}]`);
+    } else {
+      throw Error(`Undefined variable: ${node.value}`);
+    }
+  }
+
+  visitArrayLookup(node: ArrayLookup) {
+    node.array.visit(this);
+    emit(` push {r0, ip}`);
+    node.index.visit(this);
+    emit(` pop {r1, ip}`);
+    emit(` ldr r2, [r1]`);
+    emit(` cmp r0, r2`);
+    emit(` movhs r0, #0`);
+    emit(` addlo r1, r1, #4`);
+    emit(` lsllo r0, r0, #2`);
+    emit(` ldrlo r0, [r1, r0]`);
+  }
+
+  visitEqual(node: Equal) {
+    node.left.visit(this);
+    emit(`  push {r0, ip}`);
+    node.right.visit(this);
+    emit(`  pop {r1, ip}`);
+    emit(`  cmp r0, r1`);
+    emit(`  moveq r0, #1`);
+    emit(`  movne r0, #0`);
+  }
+
+  visitNotEqual(node: NotEqual) {
+    node.left.visit(this);
+    emit(`  push {r0, ip}`);
+    node.right.visit(this);
+    emit(`  pop {r1, ip}`);
+    emit(`  cmp r0, r1`);
+    emit(`  movne r0, #1`);
+    emit(`  moveq r0, #0`);
+  }
+
+  visitNull(_: Null) {
+    emit(` mov r0, #0`);
+  }
 }
 
 export class Number implements AST {
   constructor(public value: number) {}
 
-  emit(_: Environment) {
-    emit(`  ldr r0, =${this.value}`);
+  visit<T>(v: Visitor<T>) {
+    return v.visitNumber(this);
   }
 
   equals(other: AST): boolean {
@@ -23,14 +163,11 @@ export class Number implements AST {
 
 export class AddAssign implements AST {
   constructor(public name: string, public value: AST) {}
-  emit(env: Environment) {
-    const offset = env.locals.get(this.name);
-    if (offset) {
-      emit(` add r0, [fp, #${offset}], #${(this.value as Number).value}`);
-    } else {
-      throw Error(`Undefined variable: ${this.name}`);
-    }
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitAddAssign(this);
   }
+
   equals(other: AST): boolean {
     return (
       other instanceof AddAssign &&
@@ -42,14 +179,11 @@ export class AddAssign implements AST {
 
 export class SubAssign implements AST {
   constructor(public name: string, public value: AST) {}
-  emit(env: Environment) {
-    const offset = env.locals.get(this.name);
-    if (offset) {
-      emit(` sub r0, [fp, #${offset}], #${(this.value as Number).value}`);
-    } else {
-      throw Error(`Undefined variable: ${this.name}`);
-    }
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitSubAssign(this);
   }
+
   equals(other: AST): boolean {
     return (
       other instanceof SubAssign &&
@@ -61,14 +195,11 @@ export class SubAssign implements AST {
 
 export class Id implements AST {
   constructor(public value: string) {}
-  emit(env: Environment) {
-    const offset = env.locals.get(this.value);
-    if (offset) {
-      emit(` ldr r0, [fp, #${offset}]`);
-    } else {
-      throw Error(`Undefined variable: ${this.value}`);
-    }
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitId(this);
   }
+
   equals(other: AST): boolean {
     return other instanceof Id && this.value == other.value;
   }
@@ -76,12 +207,11 @@ export class Id implements AST {
 
 export class Not implements AST {
   constructor(public term: AST) {}
-  emit(env: Environment) {
-    this.term.emit(env);
-    emit(` cmp r0, #0`);
-    emit(` moveq r0, #1`);
-    emit(` movne r0, #0`);
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitNot(this);
   }
+
   equals(other: AST): boolean {
     return other instanceof Not && this.term.equals(other.term);
   }
@@ -89,15 +219,11 @@ export class Not implements AST {
 
 export class Equal implements AST {
   constructor(public left: AST, public right: AST) {}
-  emit(env: Environment) {
-    this.left.emit(env);
-    emit(`  push {r0, ip}`);
-    this.right.emit(env);
-    emit(`  pop {r1, ip}`);
-    emit(`  cmp r0, r1`);
-    emit(`  moveq r0, #1`);
-    emit(`  movne r0, #0`);
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitEqual(this);
   }
+
   equals(other: AST): boolean {
     return (
       other instanceof Equal &&
@@ -109,14 +235,8 @@ export class Equal implements AST {
 
 export class NotEqual implements AST {
   constructor(public left: AST, public right: AST) {}
-  emit(env: Environment) {
-    this.left.emit(env);
-    emit(`  push {r0, ip}`);
-    this.right.emit(env);
-    emit(`  pop {r1, ip}`);
-    emit(`  cmp r0, r1`);
-    emit(`  movne r0, #1`);
-    emit(`  moveq r0, #0`);
+  visit<T>(v: Visitor<T>) {
+    return v.visitNotEqual(this);
   }
   equals(other: AST): boolean {
     return (
@@ -698,13 +818,11 @@ export class Main implements AST {
 
 export class Assert implements AST {
   constructor(public condition: AST) {}
-  emit(env: Environment) {
-    this.condition.emit(env);
-    emit(` cmp r0, #1`);
-    emit(` moveq r0, #'.'`);
-    emit(` movne r0, #'F'`);
-    emit(` bl putchar`);
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitAssert(this);
   }
+
   equals(other: AST): boolean {
     return other instanceof Assert && this.condition == other.condition;
   }
@@ -727,3 +845,92 @@ export class Environment {
     public nextLocalOffset: number
   ) {}
 }
+
+/*
+ *
+ * Chapter 10
+ */
+
+class Boolean implements AST {
+  constructor(public value: boolean) {}
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitBoolean(this);
+  }
+
+  equals(other: AST): boolean {
+    return other instanceof Boolean && other.value == this.value;
+  }
+}
+
+class Undefined implements AST {
+  constructor() {}
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitUndefined(this);
+  }
+
+  equals(other: AST): boolean {
+    return other instanceof Undefined;
+  }
+}
+
+class Null implements AST {
+  constructor() {}
+  visit<T>(v: Visitor<T>) {
+    return v.visitNull(this);
+  }
+  equals(other: AST): boolean {
+    return other instanceof Null;
+  }
+}
+
+let TRUE = token(/true\b/y).map((_) => new Boolean(true));
+let FALSE = token(/false\b/y).map((_) => new Boolean(false));
+let UNDEFINED = token(/undefined\b/y).map((_) => new Undefined());
+let NULL = token(/null\b/y).map((_) => new Null());
+
+let boolean: Parser<AST> = TRUE.or(FALSE);
+
+/*
+ * Chapter 11
+ */
+
+class ArrayLiteral implements AST {
+  constructor(public elements: Array<AST>) {}
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitArrayLiteral(this);
+  }
+
+  equals(other: AST): boolean {
+    return other instanceof ArrayLiteral;
+  }
+}
+
+class ArrayLookup implements AST {
+  constructor(public array: AST, public index: AST) {}
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitArrayLookup(this);
+  }
+
+  equals(other: AST): boolean {
+    return other instanceof ArrayLookup;
+  }
+}
+
+class Length implements AST {
+  constructor(public array: AST) {}
+
+  visit<T>(v: Visitor<T>) {
+    return v.visitLength(this);
+  }
+  equals(other: AST): boolean {
+    return other instanceof Length && other.array == this.array;
+  }
+}
+
+/*
+ * Chapter 12
+ */
